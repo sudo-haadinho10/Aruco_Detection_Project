@@ -1,0 +1,2 @@
+ g++ -o poseestimation poseestimation.cpp wsServer.c -I /usr/include/opencv4 $(pkg-config --cflags --libs opencv4) -Wall -I../ext/wsServer/include -L../ext/wsServer -lws -lpthread
+
