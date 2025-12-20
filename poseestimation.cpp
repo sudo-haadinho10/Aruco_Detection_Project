@@ -14,8 +14,10 @@
 #include <thread>
 #include <ws.h>
 #include "wsServer.h"
-
-
+#include <opencv2/calib3d.hpp> //for findHomography
+#include <opencv2/imgproc.hpp> // for warpPerspective
+#include <sl/Camera.hpp>
+#include "utilities.hpp"
 
 void Init_WSSocket(void) {
     // 1. Define the event handlers
@@ -93,8 +95,8 @@ void loadCalibration(const string& filename, Mat& cameraMatrix, Mat& distCoeffs)
     if (!fs.isOpened()) {
         throw runtime_error("Error: Cannot open calibration file: " + filename);
     }
-    fs["camera_matrix"] >> cameraMatrix;
-    fs["dist_coeffs"] >> distCoeffs;
+    fs["camera_matrix_ltu"] >> cameraMatrix;
+    fs["dist_coeffs_ltu"] >> distCoeffs;
     fs.release();
 
     if (cameraMatrix.empty() || distCoeffs.empty()) {
@@ -102,10 +104,10 @@ void loadCalibration(const string& filename, Mat& cameraMatrix, Mat& distCoeffs)
     }
 }
 
-// CORRECTED: The function signature uses 'int' for the dictionary type
-void poseEstimation(Mat& frame, int arucoDictType, Mat& matrixCoefficients, Mat& distortionCoefficients) {
-    Mat gray;
-    cvtColor(frame, gray, COLOR_BGR2GRAY);
+// The function signature uses 'int' for the dictionary type
+void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficients, cv::Mat& distortionCoefficients) {
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, COLOR_BGR2GRAY);
 
     aruco::Dictionary markerDict = aruco::getPredefinedDictionary(arucoDictType);
     aruco::DetectorParameters paramMarkers = aruco::DetectorParameters();
@@ -119,12 +121,36 @@ void poseEstimation(Mat& frame, int arucoDictType, Mat& matrixCoefficients, Mat&
 
     if (!markerCorners.empty()) {
         vector<Vec3d> rvecs, tvecs;
-        aruco::estimatePoseSingleMarkers(markerCorners, 9.5, matrixCoefficients, distortionCoefficients, rvecs, tvecs);
+        aruco::estimatePoseSingleMarkers(markerCorners,10, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
 
-        const float alpha = 0.1f; // Smoothing factor
+        const float alpha = 0.8f; // Smoothing factor
 
         for (size_t i = 0; i < markerIDs.size(); ++i) {
-            int current_id = markerIDs[i];
+            
+
+	    //vector<cv::Point2f> source_points = markerCorners[i];
+
+	    /*vector<cv::Point2f> destination_points = {
+            cv::Point2f(0, 0),         // Top-Left corner
+            cv::Point2f(199, 0),       // Top-Right corner
+            cv::Point2f(199, 199),     // Bottom-Right corner
+            cv::Point2f(0, 199)        // Bottom-Left corner
+            };*/
+		
+	    //cv::Mat homography_matrix = cv::findHomography(source_points, destination_points);
+	    
+	  //  cv::Mat warped_marker_image;
+
+	/*    cv::warpPerspective(frame,                  // The original image you want to transform
+                            warped_marker_image,    // The output image
+                            homography_matrix,      // The transformation matrix to use
+                            cv::Size(200, 200));    // The size of the output image (must match your destination)
+
+        // Show the result in a new window. You'll see the marker as a flat square.
+        cv::imshow("Top-Down view of Marker ID: " + std::to_string(markerIDs[i]), warped_marker_image);
+	*/
+
+	    int current_id = markerIDs[i];
             Vec3d current_tvec = tvecs[i];
             Vec3d current_rvec = rvecs[i];
 
@@ -170,13 +196,36 @@ void poseEstimation(Mat& frame, int arucoDictType, Mat& matrixCoefficients, Mat&
 	    snprintf(buffer, sizeof(buffer), "{\"x\": %.2f}", data.float_z);
 	    send_joystick_data(buffer);
 
-
 	    //
 
             Vec3d smoothed_tvec(data.float_x, data.float_y, data.float_z);
             Vec3d smoothed_rvec(data.rvec_x, data.rvec_y, data.rvec_z);
 
-            // Convert Point2f to Point for polylines to prevent runtime crash
+	    cv::Mat rotation_matrix;
+	    cv::Rodrigues(smoothed_rvec,rotation_matrix);
+	    // 2. Decompose the rotation matrix to get Euler angles
+	    float sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
+	    bool singular = sy < 1e-6; // Check for singularity (gimbal lock)
+ 	    float roll,pitch,yaw;
+
+	    if(!singular) {
+		    roll  = std::atan2(rotation_matrix.at<double>(2,1) , rotation_matrix.at<double>(2,2));
+    		    pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+    		    yaw   = std::atan2(rotation_matrix.at<double>(1,0), rotation_matrix.at<double>(0,0));
+	    }
+
+	    else {
+		    roll  = std::atan2(-rotation_matrix.at<double>(1,2), rotation_matrix.at<double>(1,1));
+    		    pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+    	            yaw   = 0;
+	    }
+
+	    float roll_deg = roll * 180.0 / CV_PI;
+	    float pitch_deg = pitch * 180.0 / CV_PI;
+	    float yaw_deg = yaw * 180.0 / CV_PI;
+
+
+	    // Convert Point2f to Point for polylines to prevent runtime crash
             vector<Point> corners_int;
             corners_int.reserve(markerCorners[i].size());
             for (const auto& corner : markerCorners[i]) {
@@ -200,8 +249,16 @@ void poseEstimation(Mat& frame, int arucoDictType, Mat& matrixCoefficients, Mat&
             
 	    string rotText = format("R: x=%.1f y=%.1f z=%.1f", angle_x, angle_y, angle_z);
             putText(frame, rotText, Point(text_origin.x, text_origin.y + 50), FONT_HERSHEY_PLAIN, 1.3, Scalar(0, 255, 255), 2, LINE_AA);
-        }
+
+	    // Display Roll, Pitch, and Yaw
+	    string rpyText = format("RPY: r=%.1f p=%.1f y=%.1f", roll_deg, pitch_deg, yaw_deg);
+	    putText(frame, rpyText, Point(text_origin.x, text_origin.y + 75), FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 0, 255), 2, LINE_AA);
+	}
+	//cv::imshow("Live Camera Feed", frame);
+
     }
+   // cv::imshow("Live Camera Feed", frame);
+
 
     // Remove markers that haven't been seen for a while
     auto it = markerDataMap.begin();
@@ -223,10 +280,15 @@ int main(int argc, char* argv[]) {
     string calibrationFilePath, arucoTypeStr = "DICT_ARUCO_ORIGINAL";
     int cameraId = 0; 
 
-    if (argc < 3) {
+    /*if (argc < 3) {
         cerr << "Usage: " << argv[0] << " -c <calibration_file.yml> -i <camera_id> [-t <aruco_type>]" << endl;
         cerr << "Example: " << argv[0] << " -c calib.yml -i 0 -t DICT_4X4_50" << endl;
         return 1;
+    }*/
+
+    if(argc<2) {
+	    cerr<<"Usage: " << argv[0] << "-t <aruco_type>"<<"\n";
+	    return 1;
     }
 
     for (int i = 1; i < argc; ++i) {
@@ -245,37 +307,73 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (calibrationFilePath.empty()) {
+    /*if (calibrationFilePath.empty()) {
         cerr << "Error: Missing required argument for calibration file (-c)" << endl;
         return 1;
-    }
+    }*/
 
     if (ARUCO_DICT.find(arucoTypeStr) == ARUCO_DICT.end()) {
         cerr << "Error: ArUco tag type '" << arucoTypeStr << "' is not supported" << endl;
         return 1;
     }
 
-    // CORRECTED: The dictionary type is simply 'int'
+    // The dictionary type is simply 'int'
     int arucoDictType = ARUCO_DICT[arucoTypeStr];
     cout << "Using ArUco dictionary: " << arucoTypeStr << endl;
 
-    Mat k, d;
-    try {
+    //Mat k, d;
+    /*try {
         loadCalibration(calibrationFilePath, k, d);
         cout << "Calibration files loaded successfully." << endl;
     } catch (const runtime_error& e) {
         cerr << e.what() << endl;
         return 1;
-    }
+    }*/
 
-    VideoCapture video;
+    cv::Mat k = (cv::Mat_<double>(3,3)<<
+		    525.01220703125,0,655.9865112304688,
+		    0,525.01220703125,375.3223571777344,
+		    0,0,1);
+
+    cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
+
+    std::cout << "Calibration parameters loaded." << std::endl;
+
+
+    /*VideoCapture video;
     video.open(cameraId);
     if (!video.isOpened()) {
         cerr << "Error: Cannot open camera with ID " << cameraId << endl;
         return 1;
+    }*/
+
+    sl::Camera zed;
+    sl::InitParameters init_params;
+    init_params.camera_resolution =sl::RESOLUTION::HD720;
+
+    sl::ERROR_CODE err = zed.open(init_params);
+    if(err !=sl::ERROR_CODE::SUCCESS) {
+	    return 1;
     }
 
-    Mat frame;
+   
+    sl::Mat image_zed;
+    char key=' ';
+    while(key!='q') {
+	    if(zed.grab() == sl::ERROR_CODE::SUCCESS) {
+		    zed.retrieveImage(image_zed,sl::VIEW::LEFT); //Get the left image
+		    auto timestamp = zed.getTimestamp(sl::TIME_REFERENCE::IMAGE); //Image Timestamp
+		    cv::Mat frame = slMat2cvMat(image_zed);
+		    if(!frame.empty()) {
+		    	poseEstimation(frame,arucoDictType,k,d);
+			cv::imshow("Estimated Pose",frame);
+		    }
+            }
+	    key = cv::waitKey(1);
+    }
+    zed.close();
+
+    /*Mat frame;
     while (video.read(frame)) {
         if (frame.empty()){
             cerr << "Error: Captured empty frame" << endl;
@@ -283,14 +381,16 @@ int main(int argc, char* argv[]) {
         }
         poseEstimation(frame, arucoDictType, k, d);
         imshow("Estimated Pose", frame);
+	*/
 
-        char key = (char)waitKey(1);
+        /*char key = (char)waitKey(1);
         if (key == 'q' || key == 27) { // Quit on 'q' or ESC
-            break;
-        }
-    }
+         
+	    break;
+        }*/
+    //}
 
-    video.release();
-    destroyAllWindows();
+    //video.release();
+    //destroyAllWindows();
     return 0;
 }
