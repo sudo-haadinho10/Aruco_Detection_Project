@@ -111,6 +111,9 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
 
     aruco::Dictionary markerDict = aruco::getPredefinedDictionary(arucoDictType);
     aruco::DetectorParameters paramMarkers = aruco::DetectorParameters();
+
+    paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX; //SUB PIXEL ACCURACY, WE ALSO TRY CORNER_REFINE_APRILTAG for better robustness in detected values
+    paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_APRILTAG;
     aruco::ArucoDetector detector(markerDict, paramMarkers);
 
     vector<vector<Point2f>> markerCorners;
@@ -120,8 +123,9 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
     uint32_t currentTime = static_cast<uint32_t>(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
 
     if (!markerCorners.empty()) {
+	    //30cm
         vector<Vec3d> rvecs, tvecs;
-        aruco::estimatePoseSingleMarkers(markerCorners,10, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
+        aruco::estimatePoseSingleMarkers(markerCorners,9.7, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
 
         const float alpha = 0.8f; // Smoothing factor
 
@@ -193,8 +197,8 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
 	    //Sending Data via websockets
 	    char buffer[64];
 
-	    snprintf(buffer, sizeof(buffer), "{\"x\": %.2f}", data.float_z);
-	    send_joystick_data(buffer);
+	    //snprintf(buffer, sizeof(buffer), "{\"x\": %.2f}", data.float_z);
+	    //send_joystick_data(buffer);
 
 	    //
 
@@ -236,11 +240,12 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
             // Draw axes and text using the smoothed values
             cv::drawFrameAxes(frame, matrixCoefficients, distortionCoefficients, smoothed_rvec, smoothed_tvec, 5);
 
-            Point text_origin = corners_int[0];
-            putText(frame, "ID: " + to_string(data.id), text_origin, FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 255, 255), 2, LINE_AA);
+            //Point text_origin = corners_int[0];
+            Point text_origin = {20,30};
+	    putText(frame, "ID: " + to_string(data.id), text_origin, FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 255, 255), 2, LINE_AA);
             
             string transText = format("T: x=%.1f y=%.1f z=%.1f", data.float_x, data.float_y, data.float_z);
-            putText(frame, transText, Point(text_origin.x, text_origin.y + 25), FONT_HERSHEY_PLAIN, 1.3, Scalar(0, 255, 0), 2, LINE_AA);
+            putText(frame, transText, Point(text_origin.x, text_origin.y +25), FONT_HERSHEY_PLAIN, 1.3, Scalar(0, 255, 0), 2, LINE_AA);
 
 	 
             float angle_x = data.rvec_x * 180.0 / CV_PI;
@@ -248,11 +253,11 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
             float angle_z = data.rvec_z * 180.0 / CV_PI;
             
 	    string rotText = format("R: x=%.1f y=%.1f z=%.1f", angle_x, angle_y, angle_z);
-            putText(frame, rotText, Point(text_origin.x, text_origin.y + 50), FONT_HERSHEY_PLAIN, 1.3, Scalar(0, 255, 255), 2, LINE_AA);
+            putText(frame, rotText, Point(text_origin.x, text_origin.y +50), FONT_HERSHEY_PLAIN, 1.3, Scalar(0, 255, 255), 2, LINE_AA);
 
 	    // Display Roll, Pitch, and Yaw
 	    string rpyText = format("RPY: r=%.1f p=%.1f y=%.1f", roll_deg, pitch_deg, yaw_deg);
-	    putText(frame, rpyText, Point(text_origin.x, text_origin.y + 75), FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 0, 255), 2, LINE_AA);
+	    putText(frame, rpyText, Point(text_origin.x, text_origin.y +75), FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 0, 255), 2, LINE_AA);
 	}
 	//cv::imshow("Live Camera Feed", frame);
 
@@ -333,8 +338,14 @@ int main(int argc, char* argv[]) {
     cv::Mat k = (cv::Mat_<double>(3,3)<<
 		    525.01220703125,0,655.9865112304688,
 		    0,525.01220703125,375.3223571777344,
-		    0,0,1);
+		    0,0,1); 
 
+      /*cv::Mat k = (cv::Mat_<double>(3,3)<<
+                    1059.7500,0,1126.0800,
+                    0,1059.5200,643.7720,
+                    0,0,1);
+*/
+   
     cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
 
     std::cout << "Calibration parameters loaded." << std::endl;
@@ -350,7 +361,8 @@ int main(int argc, char* argv[]) {
     sl::Camera zed;
     sl::InitParameters init_params;
     init_params.camera_resolution =sl::RESOLUTION::HD720;
-
+    
+    
     sl::ERROR_CODE err = zed.open(init_params);
     if(err !=sl::ERROR_CODE::SUCCESS) {
 	    return 1;
