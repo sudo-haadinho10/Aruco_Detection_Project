@@ -18,6 +18,9 @@
 #include <opencv2/imgproc.hpp> // for warpPerspective
 #include <sl/Camera.hpp>
 #include "utilities.hpp"
+//#include "poseestimation.hpp"
+
+#include "teraGrid.h"
 
 void Init_WSSocket(void) {
     // 1. Define the event handlers
@@ -104,6 +107,150 @@ void loadCalibration(const string& filename, Mat& cameraMatrix, Mat& distCoeffs)
     }
 }
 
+void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficients,cv::Mat& distortionCoefficients) 
+{
+
+	cv::Mat gray;
+	cv::cvtColor(frame,gray,cv::COLOR_BGR2GRAY);
+
+    	aruco::Dictionary markerDict = aruco::getPredefinedDictionary(arucoDictType);
+    	aruco::DetectorParameters paramMarkers = aruco::DetectorParameters();
+
+    	//paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX; //SUB PIXEL ACCURACY, WE ALSO TRY CORNER_REFINE_APRILTAG for better robustness in detected values
+    	paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_APRILTAG;
+    	aruco::ArucoDetector detector(markerDict, paramMarkers);
+
+    	vector<vector<Point2f>> markerCorners;
+    	vector<int> markerIDs;
+    	detector.detectMarkers(gray, markerCorners, markerIDs);
+
+	uint32_t currentTime = static_cast<uint32_t>(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
+
+
+	if(!markerCorners.empty()) 
+	{
+		std::vector<Vec3d> rvecs,tvecs;
+		aruco::estimatePoseSingleMarkers(markerCorners,9.7, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
+		const float alpha = 0.1f;
+
+		std::vector<cv::Vec3d> visible_smoothed_tvecs;
+ 	        std::vector<cv::Vec3d> visible_smoothed_rvecs;
+
+		
+		//
+		std::vector<int> visible_marker_ids;
+		std::vector<float> visible_marker_ranges;
+		//
+		//
+
+
+		for(size_t i=0;i<markerIDs.size();i++) 
+		{
+			int current_id = markerIDs[i];
+            		Vec3d current_tvec = tvecs[i];
+            		Vec3d current_rvec = rvecs[i];
+			
+			float avg_x=0, avg_y=0;
+            		for(const auto& corner : markerCorners[i])
+			{
+                		avg_x += corner.x;
+                		avg_y += corner.y;
+            		}
+            		avg_x /= 4.0f;
+            		avg_y /= 4.0f;
+
+            		MarkerData data;
+
+			if (markerDataMap.count(current_id)) 
+			{
+                		MarkerData& prev_data = markerDataMap.at(current_id);
+                		// Apply exponential moving average for smoothing
+				data.float_x = alpha * current_tvec[0] + (1.0f - alpha) * prev_data.float_x;
+                		data.float_y = alpha * current_tvec[1] + (1.0f - alpha) * prev_data.float_y;
+                		data.float_z = alpha * current_tvec[2] + (1.0f - alpha) * prev_data.float_z;
+                		data.rvec_x = alpha * current_rvec[0] + (1.0f - alpha) * prev_data.rvec_x;
+                		data.rvec_y = alpha * current_rvec[1] + (1.0f - alpha) * prev_data.rvec_y;
+                		data.rvec_z = alpha * current_rvec[2] + (1.0f - alpha) * prev_data.rvec_z;
+            	       }
+            	       else 
+		       {
+			       // First time seeing this marker, initialize directly
+			       data.float_x = current_tvec[0];
+			       data.float_y = current_tvec[1];
+			       data.float_z = current_tvec[2];
+			       data.rvec_x = current_rvec[0];
+			       data.rvec_y = current_rvec[1];
+			       data.rvec_z = current_rvec[2];
+            	      }
+		      data.id = current_id;
+	 	      data.pixel_x = static_cast<uint16_t>(avg_x);
+            	      data.pixel_y = static_cast<uint16_t>(avg_y);
+            	      data.update_time = currentTime;
+            	      data.access_time = currentTime;
+            	      markerDataMap[current_id] = data;
+
+		 
+		      visible_smoothed_tvecs.emplace_back(data.float_x,data.float_y,data.float_z);
+		      visible_smoothed_rvecs.emplace_back(data.rvec_x,data.rvec_y,data.rvec_z);
+		      visible_marker_ids.emplace_back(current_id);
+		      cv::Vec3d current_smoothed_pos(data.float_x,data.float_y,data.float_z);
+		      float range = cv::norm(current_smoothed_pos); //Calculates sqrt(x^2 + y^2 + z^2)
+		      visible_marker_ranges.emplace_back(range);
+		      
+		      // Convert Point2f to Point for polylines to prevent runtime crash
+ 	              vector<Point> corners_int;
+            	      corners_int.reserve(markerCorners[i].size());
+            	      for (const auto& corner : markerCorners[i]) 
+		      {
+			      corners_int.push_back(Point((int)corner.x, (int)corner.y));
+            	      }
+            	      polylines(frame, corners_int, true, Scalar(0, 255, 255), 4, LINE_AA);
+		      // Draw axes and text using the smoothed values
+  	              cv::drawFrameAxes(frame, matrixCoefficients, distortionCoefficients, visible_smoothed_rvecs.back(), visible_smoothed_tvecs.back(), 5);
+		
+		      //cv::Point text_origin = {20,30};
+		      //
+		      cv::Point marker_origin(markerCorners[i][0].x, markerCorners[i][0].y);
+
+		      cv::putText(frame, "ID: " + to_string(data.id),cv::Point(marker_origin.x,marker_origin.y-10), FONT_HERSHEY_PLAIN, 1.3, Scalar(255, 255, 255), 2, LINE_AA);
+
+		      string transText = cv::format("Po: %.0f,%.0f,%.0f",data.float_x,data.float_y,data.float_z);
+		      cv::putText(frame,transText,cv::Point(marker_origin.x,marker_origin.y+20),cv::FONT_HERSHEY_PLAIN,1.0,cv::Scalar(0,255,0),1,cv::LINE_AA);
+		      
+		      //Range/Euclidean distance
+		      //
+		      string rangeText = cv::format("Range: %.1f",range);
+		      cv::putText(frame,rangeText,cv::Point(marker_origin.x,marker_origin.y+40),cv::FONT_HERSHEY_PLAIN,1.0,cv::Scalar(0,255,255),1,cv::LINE_AA);
+		      // cv::putText(frame,"ID: " + to_string(data.id),text_origin+50,FONT_HERSHEY_PLAIN,1.3,Scalar(255,0,255),2,LINE_AA);
+		}
+
+		const int required_markers = 4; //Minimum 4 markers needed 
+		if(visible_smoothed_tvecs.size()==required_markers) 
+		{
+			int num_visible = visible_marker_ids.size();
+			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0]);
+
+
+			
+			//Optional Visualization for Debugging
+			//
+			cv::Point text_origin(20,30);
+			cv::putText(frame,"STATUS: Providing data to Triangulation", text_origin,FONT_HERSHEY_PLAIN,1.3,Scalar(0,255,0),2,LINE_AA);
+			string countText = cv::format("Visible Markers: %d",num_visible);
+			cv::putText(frame,countText,cv::Point(text_origin.x,text_origin.y+25),FONT_HERSHEY_PLAIN,1.3,Scalar(0,255,255),2,LINE_AA);
+
+			string rangeText = cv::format("Range  to ID %d: %.1f", visible_marker_ids[0],visible_marker_ranges[0]);
+			cv::putText(frame,rangeText,Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+		}
+		else 
+		{
+			cv::Point text_origin(20,30);
+			cv::putText(frame,"Status: Less than 4 markers detected",text_origin,FONT_HERSHEY_PLAIN,1.3,Scalar(0,0,255),2,LINE_AA); 
+		}
+
+	}
+}
+
 // The function signature uses 'int' for the dictionary type
 void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficients, cv::Mat& distortionCoefficients) {
     cv::Mat gray;
@@ -123,7 +270,7 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
     uint32_t currentTime = static_cast<uint32_t>(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
 
     if (!markerCorners.empty()) {
-	    //30cm
+	    //9.7cm
         vector<Vec3d> rvecs, tvecs;
         aruco::estimatePoseSingleMarkers(markerCorners,9.7, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
 
@@ -177,7 +324,8 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
                 data.rvec_x = alpha * current_rvec[0] + (1.0f - alpha) * prev_data.rvec_x;
                 data.rvec_y = alpha * current_rvec[1] + (1.0f - alpha) * prev_data.rvec_y;
                 data.rvec_z = alpha * current_rvec[2] + (1.0f - alpha) * prev_data.rvec_z;
-            } else {
+            } 
+	    else {
                 // First time seeing this marker, initialize directly
                 data.float_x = current_tvec[0];
                 data.float_y = current_tvec[1];
@@ -198,6 +346,7 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
 	    char buffer[64];
 
 	    //snprintf(buffer, sizeof(buffer), "{\"x\": %.2f}", data.float_z);
+	    //
 	    //send_joystick_data(buffer);
 
 	    //
@@ -276,12 +425,16 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
     }
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) 
+{
 
     thread ws_thread(Init_WSSocket);
     ws_thread.detach(); //detatch the thread to run independently
     cout << "Websocket server running is currently running in the background" <<"\n";    
-	
+
+    //Initialize teraGrid
+    teraGridInit(&teraGrid);
+
     string calibrationFilePath, arucoTypeStr = "DICT_ARUCO_ORIGINAL";
     int cameraId = 0; 
 
@@ -344,7 +497,7 @@ int main(int argc, char* argv[]) {
                     1059.7500,0,1126.0800,
                     0,1059.5200,643.7720,
                     0,0,1);
-*/
+      */
    
     cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
 
@@ -377,7 +530,8 @@ int main(int argc, char* argv[]) {
 		    auto timestamp = zed.getTimestamp(sl::TIME_REFERENCE::IMAGE); //Image Timestamp
 		    cv::Mat frame = slMat2cvMat(image_zed);
 		    if(!frame.empty()) {
-		    	poseEstimation(frame,arucoDictType,k,d);
+		    	//poseEstimation(frame,arucoDictType,k,d);
+			poseEstimationV2(frame,arucoDictType,k,d);
 			cv::imshow("Estimated Pose",frame);
 		    }
             }
