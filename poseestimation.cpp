@@ -22,6 +22,9 @@
 
 #include "teraGrid.h"
 
+
+int allDetected = false;
+
 void Init_WSSocket(void) {
     // 1. Define the event handlers
 	//struct ws_events evs;
@@ -130,8 +133,8 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 	if(!markerCorners.empty()) 
 	{
 		std::vector<Vec3d> rvecs,tvecs;
-		aruco::estimatePoseSingleMarkers(markerCorners,9.7, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
-		const float alpha = 0.1f;
+		aruco::estimatePoseSingleMarkers(markerCorners,10, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
+		const float alpha = 0.8f;
 
 		std::vector<cv::Vec3d> visible_smoothed_tvecs;
  	        std::vector<cv::Vec3d> visible_smoothed_rvecs;
@@ -229,7 +232,11 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 		{
 			int num_visible = visible_marker_ids.size();
 			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0]);
-
+			std::cout<<"NUM VISIBLE"<<num_visible<<"\n";
+		
+			std::cout<<"MARKER IDS\n"<<visible_marker_ids[0]<<" "<<visible_marker_ids[1]<<" "<<visible_marker_ids[2]<<" "<<visible_marker_ids[3]<<"\n";
+		
+			std::cout<<"MARKER RANGES\n"<<visible_marker_ranges[0]<<" "<<visible_marker_ranges[1]<<" "<<visible_marker_ranges[2]<<" "<<visible_marker_ranges[3]<<"\n";
 
 			
 			//Optional Visualization for Debugging
@@ -239,8 +246,14 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			string countText = cv::format("Visible Markers: %d",num_visible);
 			cv::putText(frame,countText,cv::Point(text_origin.x,text_origin.y+25),FONT_HERSHEY_PLAIN,1.3,Scalar(0,255,255),2,LINE_AA);
 
-			string rangeText = cv::format("Range  to ID %d: %.1f", visible_marker_ids[0],visible_marker_ranges[0]);
-			cv::putText(frame,rangeText,Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			//string rangeText = cv::format("Range  to ID %d: %.1f", visible_marker_ids[0],visible_marker_ranges[0]);
+			//cv::putText(frame,rangeText,Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			//
+			//string rangeText = cv::format("%f %f %f\n", teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
+			//cv::putText(frame,rangeText,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			printf("x values\n %f %f %f\n",teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
+			
+			allDetected=true;
 		}
 		else 
 		{
@@ -274,7 +287,7 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
         vector<Vec3d> rvecs, tvecs;
         aruco::estimatePoseSingleMarkers(markerCorners,9.7, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
 
-        const float alpha = 0.8f; // Smoothing factor
+        const float alpha = 0.1f; // Smoothing factor
 
         for (size_t i = 0; i < markerIDs.size(); ++i) {
             
@@ -520,7 +533,6 @@ int main(int argc, char* argv[])
     if(err !=sl::ERROR_CODE::SUCCESS) {
 	    return 1;
     }
-
    
     sl::Mat image_zed;
     char key=' ';
@@ -533,6 +545,7 @@ int main(int argc, char* argv[])
 		    	//poseEstimation(frame,arucoDictType,k,d);
 			poseEstimationV2(frame,arucoDictType,k,d);
 			cv::imshow("Estimated Pose",frame);
+			if(allDetected) return 0;
 		    }
             }
 	    key = cv::waitKey(1);
