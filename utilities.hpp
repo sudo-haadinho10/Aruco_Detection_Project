@@ -11,4 +11,7 @@ cv::Mat slMat2cvMat(sl::Mat& input);
 // Mapping between MAT_TYPE and CV_TYPE
 int getOCVtype(sl::MAT_TYPE type);
 
+//int32_t
+int getRange(int x,int y,int z);
+
 #endif

@@ -28,3 +28,9 @@ cv::Mat slMat2cvMat(sl::Mat& input) {
     // cv::Mat and sl::Mat will share a single memory structure
     return cv::Mat(input.getHeight(), input.getWidth(), getOCVtype(input.getDataType()), input.getPtr<sl::uchar1>(sl::MEM::CPU), input.getStepBytes(sl::MEM::CPU));
 }
+
+int getRange(int x,int y,int z) {
+        int temp = (x*x)+(y*y)+(z*z);
+        return std::sqrt(temp);
+}
+

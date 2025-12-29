@@ -27,8 +27,8 @@ void onclose(ws_cli_conn_t client)
 void onmessage(ws_cli_conn_t client,
 	const unsigned char *msg,uint64_t size,int type)
 {
-	char *cli;
-	cli=ws_getaddress(client);
+	//char *cli;
+	//cli=ws_getaddress(client);
 }
 
 void send_joystick_data(const char *message)
