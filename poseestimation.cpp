@@ -164,7 +164,7 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 
             		MarkerData data;
 
-			if (markerDataMap.count(current_id)) 
+		/*	if (markerDataMap.count(current_id)) 
 			{
                 		MarkerData& prev_data = markerDataMap.at(current_id);
                 		// Apply exponential moving average for smoothing
@@ -174,9 +174,9 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
                 		data.rvec_x = alpha * current_rvec[0] + (1.0f - alpha) * prev_data.rvec_x;
                 		data.rvec_y = alpha * current_rvec[1] + (1.0f - alpha) * prev_data.rvec_y;
                 		data.rvec_z = alpha * current_rvec[2] + (1.0f - alpha) * prev_data.rvec_z;
-            	       }
-            	       else 
-		       {
+            	       }*/
+            	       //else 
+		       //{
 			       // First time seeing this marker, initialize directly
 			       data.float_x = current_tvec[0];
 			       data.float_y = current_tvec[1];
@@ -184,7 +184,7 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			       data.rvec_x = current_rvec[0];
 			       data.rvec_y = current_rvec[1];
 			       data.rvec_z = current_rvec[2];
-            	      }
+            	      //}
 		      data.id = current_id;
 	 	      data.pixel_x = static_cast<uint16_t>(avg_x);
             	      data.pixel_y = static_cast<uint16_t>(avg_y);
@@ -192,7 +192,13 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
             	      data.access_time = currentTime;
             	      markerDataMap[current_id] = data;
 
-		 
+		      //DEBUG: PRINTING RVECS
+
+		      cout<<"Id:"<<current_id<<"\n"<<current_rvec[0]<<" "<<current_rvec[1]<<" "<<current_rvec[2]<<"\n";
+
+		      float magnitude = std::sqrt(current_rvec[0]*current_rvec[0] + current_rvec[2]*current_rvec[2]);
+		      cout<<"ID:"<<current_id<<"\n"<<"Degrees:"<<(magnitude*180)/PI<<"\n";
+
 		      visible_smoothed_tvecs.emplace_back(data.float_x,data.float_y,data.float_z);
 		      visible_smoothed_rvecs.emplace_back(data.rvec_x,data.rvec_y,data.rvec_z);
 		      visible_marker_ids.emplace_back(current_id);
@@ -231,7 +237,49 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 		if(visible_smoothed_tvecs.size()==required_markers) 
 		{
 			int num_visible = visible_marker_ids.size();
-			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0]);
+
+//
+			float sum_cos=0.0f;
+			float sum_sin=0.0f;
+			std::string Yawval;
+			for(int j=0;j<visible_smoothed_tvecs.size();j++) 
+			
+			{
+				cv::Mat rotation_matrix;
+				cv::Mat rvec_mat(visible_smoothed_rvecs[j]); //constructor
+            			cv::Rodrigues(rvec_mat,rotation_matrix);
+            			// 2. Decompose the rotation matrix to get Euler angles
+            			float sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
+            			bool singular = sy < 1e-6; // Check for singularity (gimbal lock)
+            			float roll,pitch,yaw;
+
+            			if(!singular) {
+					roll  = std::atan2(rotation_matrix.at<double>(2,1) , rotation_matrix.at<double>(2,2));
+                    			pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+                    			yaw   = std::atan2(rotation_matrix.at<double>(1,0), rotation_matrix.at<double>(0,0));
+            			}
+
+            			else {
+					roll  = std::atan2(-rotation_matrix.at<double>(1,2), rotation_matrix.at<double>(1,1));
+                    			pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+                    			yaw   = 0.0f;
+            			}
+				float drone_yaw = yaw;
+				sum_sin+=sin(drone_yaw);
+				sum_cos+=cos(drone_yaw);
+				Yawval = cv::format("YAW: %f",(yaw*180)/PI); //degrees
+
+				if(markerIDs[j]==2) {
+				cout<<markerIDs[j]<<" "<<"RPY"<<"\n";
+				cout<<(roll*180)/PI<<" "<<(pitch*180)/PI<<" "<<(yaw*180)/PI<<"\n";
+				}
+			}
+
+			
+
+			float psi = std::atan2(sum_sin,sum_cos);
+						
+			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0],psi);
 			std::cout<<"NUM VISIBLE"<<num_visible<<"\n";
 		
 			std::cout<<"MARKER IDS\n"<<visible_marker_ids[0]<<" "<<visible_marker_ids[1]<<" "<<visible_marker_ids[2]<<" "<<visible_marker_ids[3]<<"\n";
@@ -252,7 +300,11 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			//string rangeText = cv::format("%f %f %f\n", teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
 			//cv::putText(frame,rangeText,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
 			printf("x values\n %f %f %f\n",teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
-			
+			printf("Yaw value(psi):%f\n",psi);
+			//string YAWval = cv::format("YAW: %f",yaw);
+
+			cv::putText(frame,Yawval,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+
 			allDetected=true;
 		}
 		else 
@@ -356,7 +408,7 @@ void poseEstimation(cv::Mat& frame, int arucoDictType, cv::Mat& matrixCoefficien
             markerDataMap[current_id] = data;
             
 	    //Sending Data via websockets
-	    char buffer[64];
+	    //char buffer[64];
 
 	    //snprintf(buffer, sizeof(buffer), "{\"x\": %.2f}", data.float_z);
 	    //
@@ -449,7 +501,7 @@ int main(int argc, char* argv[])
     teraGridInit(&teraGrid);
 
     string calibrationFilePath, arucoTypeStr = "DICT_ARUCO_ORIGINAL";
-    int cameraId = 0; 
+    //int cameraId = 0; 
 
     /*if (argc < 3) {
         cerr << "Usage: " << argv[0] << " -c <calibration_file.yml> -i <camera_id> [-t <aruco_type>]" << endl;
@@ -464,16 +516,20 @@ int main(int argc, char* argv[])
 
     for (int i = 1; i < argc; ++i) {
         string arg = argv[i];
-        if (arg == "-c" && i + 1 < argc) {
-            calibrationFilePath = argv[++i];
-        } else if (arg == "-i" && i + 1 < argc) {
-             try {
-                cameraId = stoi(argv[++i]);
-            } catch (const std::exception& e) {
-                cerr << "Error: Invalid camera ID provided with -i flag." << endl;
-                return 1;
-            }
-        } else if (arg == "-t" && i + 1 < argc) {
+        //The commented section was made to work with webcam/kurokesu cam.
+	//We do not require it in case of a zed cam as we are not passing any calibration file
+	//if (arg == "-c" && i + 1 < argc) {
+        //  calibrationFilePath = argv[++i];
+        //} 
+	//else if (arg == "-i" && i + 1 < argc) {
+         //    try {
+           //     cameraId = stoi(argv[++i]);
+           // } catch (const std::exception& e) {
+           //     cerr << "Error: Invalid camera ID provided with -i flag." << endl;
+           //     return 1;
+               //}
+         //} 
+         if (arg == "-t" && i + 1 < argc) {
             arucoTypeStr = argv[++i];
         }
     }
@@ -539,13 +595,13 @@ int main(int argc, char* argv[])
     while(key!='q') {
 	    if(zed.grab() == sl::ERROR_CODE::SUCCESS) {
 		    zed.retrieveImage(image_zed,sl::VIEW::LEFT); //Get the left image
-		    auto timestamp = zed.getTimestamp(sl::TIME_REFERENCE::IMAGE); //Image Timestamp
+		    //auto timestamp = zed.getTimestamp(sl::TIME_REFERENCE::IMAGE); //Image Timestamp
 		    cv::Mat frame = slMat2cvMat(image_zed);
 		    if(!frame.empty()) {
 		    	//poseEstimation(frame,arucoDictType,k,d);
 			poseEstimationV2(frame,arucoDictType,k,d);
 			cv::imshow("Estimated Pose",frame);
-			if(allDetected) return 0;
+			//if(allDetected) return 0;
 		    }
             }
 	    key = cv::waitKey(1);
