@@ -22,6 +22,7 @@
 
 #include "teraGrid.h"
 
+WallDetails_t WallDetails;
 
 int allDetected = false;
 
@@ -164,6 +165,7 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 
             		MarkerData data;
 
+			//Optional temporal smoothing logic(In case the markers are static and there is lot of noise
 		/*	if (markerDataMap.count(current_id)) 
 			{
                 		MarkerData& prev_data = markerDataMap.at(current_id);
@@ -241,19 +243,29 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 //
 			float sum_cos=0.0f;
 			float sum_sin=0.0f;
-			std::string Yawval;
+
+			float sum_cos_roll = 0.0f;
+			float sum_sin_roll = 0.0f;
+
+			float sum_cos_pitch =0.0f;
+			float sum_sin_pitch = 0.0f;
+
+			std::string Yawval,Rollval,Pitchval;
 			for(int j=0;j<visible_smoothed_tvecs.size();j++) 
 			
 			{
 				cv::Mat rotation_matrix;
-				cv::Mat rvec_mat(visible_smoothed_rvecs[j]); //constructor
-            			cv::Rodrigues(rvec_mat,rotation_matrix);
+				cv::Mat rvec_mat(visible_smoothed_rvecs[j]); //constructor rvec_mat()
+            			cv::Rodrigues(rvec_mat,rotation_matrix); //3x3 rotation matrix is the orientation of the object frame in the camera frame(opencv docs)
+				//The inverse of a 3x3 Rotation matrix is directly it's transpose
             			// 2. Decompose the rotation matrix to get Euler angles
             			float sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
             			bool singular = sy < 1e-6; // Check for singularity (gimbal lock)
             			float roll,pitch,yaw;
 
-            			if(!singular) {
+            			//THE BELOW R,P,Y ARE GIVEN IN CAMERA FRAM I.E CAMERA PERSPECTIVE
+				//CAMERA PITCH IS SAME AS DRONE YAW
+				if(!singular) {
 					roll  = std::atan2(rotation_matrix.at<double>(2,1) , rotation_matrix.at<double>(2,2));
                     			pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
                     			yaw   = std::atan2(rotation_matrix.at<double>(1,0), rotation_matrix.at<double>(0,0));
@@ -264,21 +276,55 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
                     			pitch = std::atan2(-rotation_matrix.at<double>(2,0), sy);
                     			yaw   = 0.0f;
             			}
-				float drone_yaw = yaw;
+				float drone_yaw = -1.0*pitch;
+				float drone_pitch = roll; //drone_pitch is camera roll Yd == Xc
+				float drone_roll = -1.0*yaw; //Xd == Zc
+
+				
+				//OPTIONAL DEBUGGING STUFF
+				cv::Point marker_origin(markerCorners[j][0].x, markerCorners[j][0].y);
+			        string transText = cv::format("Xd:%.0f,Yd:%.0f,Zd:%.0f",(drone_roll*180)/PI,(drone_pitch*180)/PI,(drone_yaw*180)/PI);
+                                cv::putText(frame,transText,cv::Point(marker_origin.x,marker_origin.y+65),cv::FONT_HERSHEY_PLAIN,1.2,cv::Scalar(255,255,0),2,cv::LINE_AA);
+				
+				
+				//---------------------------
+				
+				
+				//drone yaw
+				//
 				sum_sin+=sin(drone_yaw);
 				sum_cos+=cos(drone_yaw);
-				Yawval = cv::format("YAW: %f",(yaw*180)/PI); //degrees
+
+				//drone pitch Yd
+				sum_sin_pitch+=sin(drone_pitch);
+				sum_cos_pitch+=cos(drone_pitch);
+
+				//drone roll
+				sum_sin_roll+=sin(drone_roll);
+				sum_cos_roll+=cos(drone_roll);
+
+
+
+				//Yawval = cv::format("YAW: %f",(pitch*180)/PI); //degrees
 
 				if(markerIDs[j]==2) {
 				cout<<markerIDs[j]<<" "<<"RPY"<<"\n";
-				cout<<(roll*180)/PI<<" "<<(pitch*180)/PI<<" "<<(yaw*180)/PI<<"\n";
+				cout<<(pitch*180)/PI<<"\n";
 				}
 			}
 
-			
-
 			float psi = std::atan2(sum_sin,sum_cos);
-						
+			float theta=std::atan2(sum_sin_pitch,sum_cos_pitch);
+			float phi=std::atan2(sum_sin_roll,sum_cos_roll);
+
+			Yawval = cv::format("YAW(Zd): %f(degrees)",(psi*180)/PI); //degree
+			Rollval = cv::format("ROLL(Xd): %f(degrees)",(phi*180)/PI); //degrees
+                        Pitchval = cv::format("PITCH(Yd): %f(degrees)",(theta*180)/PI); //degrees
+
+			
+			
+			//Object position determination
+			//
 			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0],psi);
 			std::cout<<"NUM VISIBLE"<<num_visible<<"\n";
 		
@@ -300,10 +346,12 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			//string rangeText = cv::format("%f %f %f\n", teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
 			//cv::putText(frame,rangeText,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
 			printf("x values\n %f %f %f\n",teraGrid.x.pData[0], teraGrid.x.pData[1],teraGrid.x.pData[2]);
-			printf("Yaw value(psi):%f\n",psi);
+			//printf("Yaw value(psi):%f\n",psi);
 			//string YAWval = cv::format("YAW: %f",yaw);
 
 			cv::putText(frame,Yawval,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			cv::putText(frame,Rollval,cv::Point(text_origin.x,text_origin.y+75),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+                        cv::putText(frame,Pitchval,cv::Point(text_origin.x,text_origin.y+100),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
 
 			allDetected=true;
 		}
