@@ -4,6 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/core/mat.hpp>
+#include <opencv2/calib3d.hpp>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -18,9 +19,10 @@
 #include <opencv2/imgproc.hpp> // for warpPerspective
 #include <sl/Camera.hpp>
 #include "utilities.hpp"
+#include "ZED_Camcalib.hpp"
 //#include "poseestimation.hpp"
 
-#include "teraGrid.h"
+#include "teraGrid.hpp"
 
 WallDetails_t WallDetails;
 
@@ -111,8 +113,192 @@ void loadCalibration(const string& filename, Mat& cameraMatrix, Mat& distCoeffs)
     }
 }
 
+
+/**
+ * @brief Calculates a stable average rvec from a list, rejecting outliers.
+ * @param rvecs A vector of rvecs, presumably from markers on the same wall.
+ * @return A single, averaged rvec.
+ */
+
+cv::Vec3d calculateAverageRvec(const std::vector<cv::Vec3d>& rvecs) {
+	if(rvecs.empty()) {
+		return cv::Vec3d(0,0,0); //
+	}
+
+	cv::Mat reference_R;
+	cv::Rodrigues(rvecs[0],reference_R);
+	
+	
+	//Starting with the sum of first rvec which is always valid
+	cv::Vec3d sum_of_rvecs = rvecs[0];
+	int valid_count = 1;
+
+	//rvecs -> magnitude gives angle of rotation in radians
+	//rvecs -> direction indicates axis of rotation
+	//
+	for(size_t i=1;i<rvecs.size();i++) {
+		
+		//sqrt(x1-x2^2 + y1-y2^2 + z1-z2^2)
+		//L2 NORM IS THE EUCILDEAN DISTANCE
+		//cv::norm calculates the distance between two vectors?
+		
+		//Approach 2
+		//convert the current vec to a rotation matrix
+		cv::Mat current_R;
+		cv::Rodrigues(rvecs[i],current_R);
+
+		//Calculate the true angular difference between the two orientations
+		//This is the fix to the above 2pi problem ambiguity in rvecs
+		//R_camera_to_world
+
+		//multiplication chains transformations, and transpose reverses them!
+		//
+		cv::Mat R_diff = current_R * reference_R.t();
+		//true geometric angle b/w orientations
+		//
+		cv::Vec3d rvec_diff;
+		cv::Rodrigues(R_diff,rvec_diff);
+		
+		double error = cv::norm(rvec_diff);
+
+		//If orientation differs by more than -60 degrees (~1 rad) 
+		//We assume it is an outlier or upside down tilted marker..
+		//
+		const double outlier_threshold = 1.0;
+		if(error < outlier_threshold) {
+			sum_of_rvecs +=rvecs[i];
+			valid_count+=1;
+		}
+		else {
+			std::cout<<"Warning: Discarding outlier rvec"<<i<<" Error was: "<<error<<"\n";
+		}
+	}
+
+	std::cout << "Averaging " << valid_count << " of " << rvecs.size() << " visible markers." << std::endl;
+
+	return sum_of_rvecs/valid_count; //argRvec
+
+}
+
+/**
+ * @brief Calculates the drone's orientation in the world frame using observations from one wall.
+ * @param wall_data The struct containing all observations for a single wall.
+ * @return A 3x3 rotation matrix representing the drone's orientation in the world.
+ */
+
+cv::Mat getDroneOrientationInWorld(const WallObservations& wall_data) {
+	
+	//GOAL
+	//R_drone_in_world = R_wall_in_world * R_wall_in_camera.t().
+	//R_drone_in_world is Camera->Wall->World
+	
+	//1. Get the stable,average orientation of the Wall in Camera frame
+	//
+	cv::Vec3d avg_rvec_wall_in_camera = calculateAverageRvec(wall_data.rvecs);
+	cv::Mat R_wall_in_camera;
+	cv::Rodrigues(avg_rvec_wall_in_camera,R_wall_in_camera); //rotation matrix
+
+	cv::Mat R_wall_in_world;
+
+	//I made a custom wall coordinates axis as per my wish i.e our aluminium foil
+	//WALL X AXIS POINTS TOWARDS WORLD'S Z
+	//wall y axis points towards world y
+	//wall z axis points towards world x+ve
+	//
+	//
+	//
+	//
+	
+	// Each column represents where the wall's X, Y, Z axes point in camera coordinates
+	cv::Vec3d wall_X_in_camera(R_wall_in_camera.at<double>(0,0),
+			R_wall_in_camera.at<double>(1,0),
+			R_wall_in_camera.at<double>(2,0));
+	cv::Vec3d wall_Y_in_camera(R_wall_in_camera.at<double>(0,1),
+			R_wall_in_camera.at<double>(1,1),
+                        R_wall_in_camera.at<double>(2,1));
+	cv::Vec3d wall_Z_in_camera(R_wall_in_camera.at<double>(0,2),
+                        R_wall_in_camera.at<double>(1,2),
+                        R_wall_in_camera.at<double>(2,2));
+
+	std::cout << "Wall X-axis in camera: " << wall_X_in_camera << std::endl;
+	std::cout << "Wall Y-axis in camera: " << wall_Y_in_camera << std::endl;
+	std::cout << "Wall Z-axis in camera (normal): " << wall_Z_in_camera << std::endl;
+
+
+	if(wall_data.id ==0) {
+		//NORTH WALL
+		//
+	//	R_wall_in_world = (cv::Mat_<double>(3,3) <<
+	//			0,0,-1, //Wall Z axis points towards Worlds x axis
+	//			0,1,0,
+	//			1,0,0 //Wall x axis points towards worlds z axis
+	//	);
+	//
+		R_wall_in_world = (cv::Mat_<double>(3,3) <<
+                                1,0,0, //Wall Z axis points towards Worlds x axis
+                                0,-1,0,
+                                0,0,-1 //Wall x axis points towards worlds z axis
+                );
+
+	}
+	//else for future walls / faces
+	//
+	cv::Mat R_drone_in_world = R_wall_in_world * R_wall_in_camera.t();
+	return R_drone_in_world;
+
+}
+
+/**
+ * @brief Converts a 3x3 Rotation Matrix to Euler angles (Yaw, Pitch, Roll).
+ * @param R The input rotation matrix.
+ * @return A cv::Vec3d containing (Roll, Pitch, Yaw) in radians.
+ */
+
+cv::Vec3d rotationMatrixToEulerAngles(const cv::Mat &rotation_matrix) {
+	//1. The inverse of a 3x3 Rotation matrix is directly it's transpose
+	//2. Decompose the rotation matrix to get Euler angles
+
+	double sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
+        bool singular = sy < 1e-6; // Check for singularity (gimbal lock)
+        double roll,pitch,yaw;
+
+       
+        if(!singular) 
+	{
+		pitch  = std::atan2(rotation_matrix.at<double>(2,1) , rotation_matrix.at<double>(2,2));
+                yaw = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+                roll   = std::atan2(rotation_matrix.at<double>(1,0), rotation_matrix.at<double>(0,0));
+        }
+
+        else 
+	{
+		pitch = std::atan2(-rotation_matrix.at<double>(1,2), rotation_matrix.at<double>(1,1));
+                yaw = std::atan2(-rotation_matrix.at<double>(2,0), sy);
+                roll   = 0.0f;
+        }
+	return cv::Vec3d(roll,pitch,yaw);
+}
+
+
+
+
 void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficients,cv::Mat& distortionCoefficients) 
 {
+
+	//Infinitesimal Plane-Based Pose Estimation 
+	//This is a special case suitable for marker pose estimation.
+	//
+	float markerLength = 10.0;
+	float halfMarkerLength = markerLength/2.0;
+	std::vector<cv::Point3f> objectPoints;
+
+	//The 4 coplanar object points must be defined in the following order:
+	
+	objectPoints.push_back({-halfMarkerLength,halfMarkerLength,0});
+        objectPoints.push_back({halfMarkerLength,halfMarkerLength,0});
+        objectPoints.push_back({halfMarkerLength,-halfMarkerLength,0});
+        objectPoints.push_back({-halfMarkerLength,-halfMarkerLength,0});
+
 
 	cv::Mat gray;
 	cv::cvtColor(frame,gray,cv::COLOR_BGR2GRAY);
@@ -121,26 +307,40 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
     	aruco::DetectorParameters paramMarkers = aruco::DetectorParameters();
 
     	//paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX; //SUB PIXEL ACCURACY, WE ALSO TRY CORNER_REFINE_APRILTAG for better robustness in detected values
-    	paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_APRILTAG;
+        paramMarkers.cornerRefinementMethod = aruco::CORNER_REFINE_APRILTAG;
     	aruco::ArucoDetector detector(markerDict, paramMarkers);
 
     	vector<vector<Point2f>> markerCorners;
     	vector<int> markerIDs;
     	detector.detectMarkers(gray, markerCorners, markerIDs);
 
-	uint32_t currentTime = static_cast<uint32_t>(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
+	std::vector<Vec3d> rvecs,tvecs;
 
+
+	uint32_t currentTime = static_cast<uint32_t>(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
 
 	if(!markerCorners.empty()) 
 	{
-		std::vector<Vec3d> rvecs,tvecs;
-		aruco::estimatePoseSingleMarkers(markerCorners,10, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
-		const float alpha = 0.8f;
+		   //aruco::estimatePoseSingleMarkers(markerCorners,10, matrixCoefficients, distortionCoefficients, rvecs, tvecs);  //10cm, tvecs will be in the same uniitt
+                //const float alpha = 0.8f;
+                //
+		//
+		//New Additionn
+		//
+
+		for(size_t i=0;i<markerCorners.size();i++) 
+		{
+			cv::Vec3d rvec,tvec;
+
+			// Calculate the pose of the current marker
+			cv::solvePnP(objectPoints,markerCorners.at(i),matrixCoefficients,distortionCoefficients,rvec,tvec,false,cv::SOLVEPNP_IPPE_SQUARE);
+			rvecs.push_back(rvec);
+			tvecs.push_back(tvec);
+		}
 
 		std::vector<cv::Vec3d> visible_smoothed_tvecs;
  	        std::vector<cv::Vec3d> visible_smoothed_rvecs;
 
-		
 		//
 		std::vector<int> visible_marker_ids;
 		std::vector<float> visible_marker_ranges;
@@ -240,8 +440,79 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 		{
 			int num_visible = visible_marker_ids.size();
 
-//
-			float sum_cos=0.0f;
+			//Group all visible markers by their assigned wall.
+			//
+			std::map<WallDirection_t,WallObservations> groupedObservations;
+
+			for(size_t i = 0 ;i<visible_marker_ids.size();i++) {
+				WallDirection_t wall = getWallForMarker(visible_marker_ids[i]);
+				if(wall!=WALL_NONE) {
+					groupedObservations[wall].id = wall;
+					groupedObservations[wall].rvecs.push_back(visible_smoothed_rvecs[i]);
+					groupedObservations[wall].tvecs.push_back(visible_smoothed_tvecs[i]);
+				}
+			}
+
+			//Proceed if we successfully grouped markers from atleast one wall.
+			//
+			if(!groupedObservations.empty()) 
+			
+			{
+				//Future strategy pick the wall with most markers?
+				//Current implementation, take the first wall
+				//const referece to object of type struct
+				const WallObservations& testWall = groupedObservations.begin()->second;
+				std::cout<<"---Testing Wall ID: "<<testWall.id <<" with "<<
+					testWall.rvecs.size()<<" markers---"<<"\n";
+
+				cv::Vec3d avg_rvec_wall_in_camera = calculateAverageRvec(testWall.rvecs);
+				cv::Mat R_wall_in_camera;
+				cv::Rodrigues(avg_rvec_wall_in_camera,R_wall_in_camera);
+				//Use the euler angle conversion function
+				cv::Vec3d ypr_angles_rad_camera_frame = rotationMatrixToEulerAngles(R_wall_in_camera);
+
+				// Convert radians to degrees for easier reading
+   			//	double camera_yaw_deg   = ypr_angles_rad_camera_frame[2] * 180.0 / CV_PI;
+    			//	double camera_pitch_deg = ypr_angles_rad_camera_frame[1] * 180.0 / CV_PI;
+    			//	double camera_roll_deg  = ypr_angles_rad_camera_frame[0] * 180.0 / CV_PI;
+				cv::Mat R_drone_in_world;
+
+				R_drone_in_world = getDroneOrientationInWorld(testWall);
+
+				// The result is a vector of (Roll, Pitch, Yaw) in RADIANS.
+				cv::Vec3d ypr_angles_rad_world_frame = rotationMatrixToEulerAngles(R_drone_in_world);
+
+				// Step 2: Convert the radians to degrees for easy printing and debugging.
+				double world_yaw_deg   = ypr_angles_rad_world_frame[2] * 180.0 / CV_PI;
+				double world_pitch_deg = ypr_angles_rad_world_frame[1] * 180.0 / CV_PI;
+				double world_roll_deg  = ypr_angles_rad_world_frame[0] * 180.0 / CV_PI;
+
+
+				// Step 5: Display the results.
+    				//std::cout << "Average Wall Orientation (in Camera Frame): Yaw=" << camera_yaw_deg<< ", Pitch=" << camera_pitch_deg<< ", Roll=" << camera_roll_deg << std::endl;
+
+
+			 	cv::Vec3d rvec1 = avg_rvec_wall_in_camera; //avg rvec
+                                string transText1 = cv::format("Avg Rvec: [%.2f, %.2f, %.2f]", rvec1[0], rvec1[1], rvec1[2]);
+                                cv::putText(frame,transText1,cv::Point(10,70),cv::FONT_HERSHEY_PLAIN,1.2,cv::Scalar(255,255,0),2,cv::LINE_AA);
+
+				string orientationText = cv::format("DRONE IN WORLD YPR: %.2f, %.2f, %.2f", world_yaw_deg, world_pitch_deg, world_roll_deg);
+cv::putText(frame, orientationText, cv::Point(10, 92), FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 100, 0), 2);
+				
+
+
+				// Also display it on the video frame so you can see it in real-time.
+			 	//
+			 	for(int j=0;j<testWall.rvecs.size();j++) {
+					cv::Point marker_origin(markerCorners[j][0].x, markerCorners[j][0].y);
+					cv::Vec3d rvec = testWall.rvecs[j];
+					string transText = cv::format("Rvec: [%.2f, %.2f, %.2f]", rvec[0], rvec[1], rvec[2]);
+
+                                	cv::putText(frame,transText,cv::Point(marker_origin.x,marker_origin.y+65),cv::FONT_HERSHEY_PLAIN,1.2,cv::Scalar(255,255,0),2,cv::LINE_AA);
+				}
+			}
+
+		/*	float sum_cos=0.0f;
 			float sum_sin=0.0f;
 
 			float sum_cos_roll = 0.0f;
@@ -259,7 +530,8 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
             			cv::Rodrigues(rvec_mat,rotation_matrix); //3x3 rotation matrix is the orientation of the object frame in the camera frame(opencv docs)
 				//The inverse of a 3x3 Rotation matrix is directly it's transpose
             			// 2. Decompose the rotation matrix to get Euler angles
-            			float sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
+         
+   			float sy = std::sqrt(rotation_matrix.at<double>(0,0) * rotation_matrix.at<double>(0,0) +  rotation_matrix.at<double>(1,0) * rotation_matrix.at<double>(1,0));
             			bool singular = sy < 1e-6; // Check for singularity (gimbal lock)
             			float roll,pitch,yaw;
 
@@ -321,11 +593,11 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			Rollval = cv::format("ROLL(Xd): %f(degrees)",(phi*180)/PI); //degrees
                         Pitchval = cv::format("PITCH(Yd): %f(degrees)",(theta*180)/PI); //degrees
 
-			
+			*/
 			
 			//Object position determination
 			//
-			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0],psi);
+			teraGridLocalize(&teraGrid,num_visible,&visible_marker_ids[0],&visible_marker_ranges[0]);
 			std::cout<<"NUM VISIBLE"<<num_visible<<"\n";
 		
 			std::cout<<"MARKER IDS\n"<<visible_marker_ids[0]<<" "<<visible_marker_ids[1]<<" "<<visible_marker_ids[2]<<" "<<visible_marker_ids[3]<<"\n";
@@ -349,9 +621,9 @@ void poseEstimationV2(cv::Mat& frame,int arucoDictType,cv::Mat& matrixCoefficien
 			//printf("Yaw value(psi):%f\n",psi);
 			//string YAWval = cv::format("YAW: %f",yaw);
 
-			cv::putText(frame,Yawval,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
-			cv::putText(frame,Rollval,cv::Point(text_origin.x,text_origin.y+75),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
-                        cv::putText(frame,Pitchval,cv::Point(text_origin.x,text_origin.y+100),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			//cv::putText(frame,Yawval,cv::Point(text_origin.x,text_origin.y+50),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+			//cv::putText(frame,Rollval,cv::Point(text_origin.x,text_origin.y+75),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
+                        //cv::putText(frame,Pitchval,cv::Point(text_origin.x,text_origin.y+100),FONT_HERSHEY_PLAIN,1.3,Scalar(255,255,255),2,LINE_AA);
 
 			allDetected=true;
 		}
@@ -605,18 +877,22 @@ int main(int argc, char* argv[])
         return 1;
     }*/
 
-    cv::Mat k = (cv::Mat_<double>(3,3)<<
+    /*cv::Mat k = (cv::Mat_<double>(3,3)<<
 		    525.01220703125,0,655.9865112304688,
 		    0,525.01220703125,375.3223571777344,
-		    0,0,1); 
+		    0,0,1); */
+
 
       /*cv::Mat k = (cv::Mat_<double>(3,3)<<
                     1059.7500,0,1126.0800,
                     0,1059.5200,643.7720,
                     0,0,1);
       */
-   
-    cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
+
+    sl::Camera zed;
+
+    
+    //cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
 
     std::cout << "Calibration parameters loaded." << std::endl;
 
@@ -628,7 +904,7 @@ int main(int argc, char* argv[])
         return 1;
     }*/
 
-    sl::Camera zed;
+    
     sl::InitParameters init_params;
     init_params.camera_resolution =sl::RESOLUTION::HD720;
     
@@ -637,6 +913,11 @@ int main(int argc, char* argv[])
     if(err !=sl::ERROR_CODE::SUCCESS) {
 	    return 1;
     }
+    
+    cv::Mat k;
+    cv::Mat d;   
+    getZedCalibration(zed,k,d);
+
    
     sl::Mat image_zed;
     char key=' ';
