@@ -104,8 +104,8 @@ void loadCalibration(const string& filename, Mat& cameraMatrix, Mat& distCoeffs)
     if (!fs.isOpened()) {
         throw runtime_error("Error: Cannot open calibration file: " + filename);
     }
-    fs["camera_matrix_ltu"] >> cameraMatrix;
-    fs["dist_coeffs_ltu"] >> distCoeffs;
+    fs["cameraMatrix"] >> cameraMatrix;
+    fs["distCoeffs"] >> distCoeffs;
     fs.release();
 
     if (cameraMatrix.empty() || distCoeffs.empty()) {
@@ -821,8 +821,10 @@ int main(int argc, char* argv[])
     teraGridInit(&teraGrid);
 
     string calibrationFilePath, arucoTypeStr = "DICT_ARUCO_ORIGINAL";
+    //For kurokesu
     //int cameraId = 0; 
-
+    //end
+    //
     /*if (argc < 3) {
         cerr << "Usage: " << argv[0] << " -c <calibration_file.yml> -i <camera_id> [-t <aruco_type>]" << endl;
         cerr << "Example: " << argv[0] << " -c calib.yml -i 0 -t DICT_4X4_50" << endl;
@@ -836,28 +838,37 @@ int main(int argc, char* argv[])
 
     for (int i = 1; i < argc; ++i) {
         string arg = argv[i];
-        //The commented section was made to work with webcam/kurokesu cam.
+        
+	//COMMENT THIS SECTION IN CASE OF ZED
+	
+	//The commented section was made to work with webcam/kurokesu cam.
 	//We do not require it in case of a zed cam as we are not passing any calibration file
-	//if (arg == "-c" && i + 1 < argc) {
-        //  calibrationFilePath = argv[++i];
-        //} 
-	//else if (arg == "-i" && i + 1 < argc) {
-         //    try {
-           //     cameraId = stoi(argv[++i]);
-           // } catch (const std::exception& e) {
-           //     cerr << "Error: Invalid camera ID provided with -i flag." << endl;
-           //     return 1;
-               //}
-         //} 
+	if (arg == "-c" && i + 1 < argc) {
+          calibrationFilePath = argv[++i];
+        } 
+	/*else if (arg == "-i" && i + 1 < argc) {
+             try {
+                cameraId = stoi(argv[++i]);
+            } catch (const std::exception& e) {
+                cerr << "Error: Invalid camera ID provided with -i flag." << endl;
+                return 1;
+               }
+         }*/ 
+	 //
+	 //UPTO HERE
+	 //
          if (arg == "-t" && i + 1 < argc) {
             arucoTypeStr = argv[++i];
         }
     }
 
-    /*if (calibrationFilePath.empty()) {
+    //COMMENT IN CASE OF ZED
+    if (calibrationFilePath.empty()) {
         cerr << "Error: Missing required argument for calibration file (-c)" << endl;
         return 1;
-    }*/
+    }
+
+    //UPTO HERE
 
     if (ARUCO_DICT.find(arucoTypeStr) == ARUCO_DICT.end()) {
         cerr << "Error: ArUco tag type '" << arucoTypeStr << "' is not supported" << endl;
@@ -868,20 +879,24 @@ int main(int argc, char* argv[])
     int arucoDictType = ARUCO_DICT[arucoTypeStr];
     cout << "Using ArUco dictionary: " << arucoTypeStr << endl;
 
-    //Mat k, d;
-    /*try {
+    Mat k, d;
+    
+    //COMMENT IN CASE OF ZED
+    try {
         loadCalibration(calibrationFilePath, k, d);
         cout << "Calibration files loaded successfully." << endl;
     } catch (const runtime_error& e) {
         cerr << e.what() << endl;
         return 1;
-    }*/
+    }
+
+    //UPTO HERE
 
     /*cv::Mat k = (cv::Mat_<double>(3,3)<<
 		    525.01220703125,0,655.9865112304688,
 		    0,525.01220703125,375.3223571777344,
-		    0,0,1); */
-
+		    0,0,1); 
+*/
 
       /*cv::Mat k = (cv::Mat_<double>(3,3)<<
                     1059.7500,0,1126.0800,
@@ -889,7 +904,15 @@ int main(int argc, char* argv[])
                     0,0,1);
       */
 
-    sl::Camera zed;
+  //  cv::Mat k=(cv::Mat_<double>(3,3)<< 
+//		    1022.154184355535, 0, 393.1938332534565,
+//		    0, 1398.1007553029, 406.7841618605584,
+//		    0, 0, 1);
+
+//cv::Mat d = -17.8943745308114, 275.8064413007978, 0.1560463364966187, 0.08506931543551879, -1189.074124754644, -17.33415807631643, 269.0716278765624, -1168.853960867127, 0, 0, 0, 0, 0, 0
+
+
+    //sl::Camera zed;
 
     
     //cv::Mat d = cv::Mat::zeros(1,5,CV_64F);
@@ -897,15 +920,40 @@ int main(int argc, char* argv[])
     std::cout << "Calibration parameters loaded." << std::endl;
 
 
-    /*VideoCapture video;
-    video.open(cameraId);
-    if (!video.isOpened()) {
-        cerr << "Error: Cannot open camera with ID " << cameraId << endl;
-        return 1;
-    }*/
+    //FOR THE CSI ARDUCAM ONLY 
+    //
+    // Define the GStreamer pipeline for the NVIDIA Jetson CSI camera
+    std::string pipeline = "nvarguscamerasrc ! "
+                         "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
+                         "nvvidconv flip-method=0 ! "
+                         "video/x-raw, format=(string)BGRx ! "
+                         "videoconvert ! "
+                         "video/x-raw, format=(string)BGR ! appsink";
+
+
+    //end of arducam changes
+    //COMMENT IN CASE OF ZED
+    //
+    //VideoCapture video;
+    //video.open(cameraId); //for kurokesu or usb cams
+    
+    VideoCapture video(pipeline,cv::CAP_GSTREAMER);
 
     
-    sl::InitParameters init_params;
+    if (!video.isOpened()) {
+        //cerr << "Error: Cannot open camera with ID " << cameraId << endl;
+        cerr << "Error: Cannot open camera using GStreamer pipeline" << endl;
+
+	return 1;
+    }
+
+        cout << "Camera successfully opened using GStreamer pipeline." << endl;
+
+
+    //UPTO HERE
+
+    //FULLY WORKS UNCOMMENT THIS LATER FOR ZED 
+    /*sl::InitParameters init_params;
     init_params.camera_resolution =sl::RESOLUTION::HD720;
     
     
@@ -918,8 +966,9 @@ int main(int argc, char* argv[])
     cv::Mat d;   
     getZedCalibration(zed,k,d);
 
-   
-    sl::Mat image_zed;
+   */
+
+    /*sl::Mat image_zed;
     char key=' ';
     while(key!='q') {
 	    if(zed.grab() == sl::ERROR_CODE::SUCCESS) {
@@ -936,25 +985,30 @@ int main(int argc, char* argv[])
 	    key = cv::waitKey(1);
     }
     zed.close();
+*/
 
-    /*Mat frame;
+    //COMMENT IN CASE OF ZED
+    //
+    cv::Mat frame;
     while (video.read(frame)) {
         if (frame.empty()){
             cerr << "Error: Captured empty frame" << endl;
             break;
         }
-        poseEstimation(frame, arucoDictType, k, d);
-        imshow("Estimated Pose", frame);
-	*/
+        poseEstimationV2(frame, arucoDictType, k, d);
+	cv::imshow("Estimated Pose", frame);
+	
 
-        /*char key = (char)waitKey(1);
+        char key = (char)waitKey(1);
         if (key == 'q' || key == 27) { // Quit on 'q' or ESC
          
 	    break;
-        }*/
-    //}
+        }
+    }
 
-    //video.release();
-    //destroyAllWindows();
+    video.release();
+    destroyAllWindows();
+    
+    //UPTO HERE
     return 0;
 }
