@@ -1,2 +1,16 @@
  g++ -o poseestimation poseestimation.cpp wsServer.c -I /usr/include/opencv4 $(pkg-config --cflags --libs opencv4) -Wall -I../ext/wsServer/include -L../ext/wsServer -lws -lpthread
 
+g++ ZED_Camcalib.cpp -o xed     -I/usr/local/zed/include     -I/usr/local/cuda/include     -L/usr/local/zed/lib     -L/usr/local/cuda/lib64     -lsl_zed -lcudart -lcurand     `pkg-config --cflags --libs opencv4`     -Wall -pthread
+
+g++ -o poseestimation poseestimation.cpp wsServer.c utilities.cpp -I/usr/local/zed/include -I/usr/local/cuda/include -L/usr/local/zed/lib -L/usr/local/cuda/lib64 -I /usr/include/opencv4 $(pkg-config --cflags --libs opencv4) -Wall -I../ext/wsServer/include -L../ext/wsServer -lsl_zed -lcudart -lcurand -lws -lpthread
+
+g++ -o poseestimation     poseestimation.cpp     wsServer.c     utilities.cpp ../Downloads/teragrid/teraGrid/arm_mat_init_f32.c  ../Downloads/teragrid/teraGrid/arm_fill_f32.c   ../Downloads/teragrid/teraGrid/teraGrid.c     ../Downloads/teragrid/teraGrid/arm_mat_trans_f32.c     ../Downloads/teragrid/teraGrid/arm_mat_mult_f32.c     ../Downloads/teragrid/teraGrid/arm_mat_sub_f32.c     ../Downloads/teragrid/teraGrid/arm_copy_f32.c     -I/usr/local/zed/include     -I/usr/local/cuda/include     -I../Downloads/teragrid/teraGrid     -L/usr/local/zed/lib     -L/usr/local/cuda/lib64     -I/usr/include/opencv4     $(pkg-config --cflags --libs opencv4)     -Wall     -I../ext/wsServer/include     -L../ext/wsServer     -lsl_zed -lcudart -lcurand -lws -lpthread
+
+
+srinath@srinath-desktop:~/aruco_detection_project$ g++ -DDEBUG_MODE -DINHOUSE -o poseestimation     poseestimation.cpp     wsServer.c     utilities.cpp ../Downloads/teragrid/teraGrid/arm_mat_init_f32.c  ../Downloads/teragrid/teraGrid/arm_fill_f32.c   ../Downloads/teragrid/teraGrid/teraGrid.c     ../Downloads/teragrid/teraGrid/arm_mat_trans_f32.c     ../Downloads/teragrid/teraGrid/arm_mat_mult_f32.c     ../Downloads/teragrid/teraGrid/arm_mat_sub_f32.c     ../Downloads/teragrid/teraGrid/arm_copy_f32.c     -I/usr/local/zed/include     -I/usr/local/cuda/include     -I../Downloads/teragrid/teraGrid     -L/usr/local/zed/lib     -L/usr/local/cuda/lib64     -I/usr/include/opencv4     $(pkg-config --cflags --libs opencv4)     -Wall     -I../ext/wsServer/include     -L../ext/wsServer     -lsl_zed -lcudart -lcurand -lws -lpthread
+
+
+//finalized on 26/01/2026
+g++ -o camcalib camcalib_cpp.cpp -I /usr/include/opencv4 $(pkg-config --cflags --libs opencv4) -Wall
+
+for the rest there is a fiuckojgn make file mfs
